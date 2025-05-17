@@ -67,7 +67,9 @@ class Decoder(srd.Decoder):
         {'id' : 'clock_edge', 'desc': 'Edge of the clock that samples the data',
           'default': 'rising', 'values': ('rising', 'falling')
          },
-        {'id': 'bits', 'desc': 'The #bits in a word', 'default': 8 }
+        {'id': 'bits', 'desc': 'The #bits in a word', 'default': 8 },
+        {'id': 'bitorder', 'desc': 'Reverse the bit order, i.e the 1st bit received is a high-order bit',
+            'default': 'msb first', 'values': ('lsb first', 'msb first')}
     )
     annotations = (
         ('bit', 'Data/address bit'),
@@ -123,9 +125,24 @@ class Decoder(srd.Decoder):
     def decode(self):
         clock_edge = self.options['clock_edge']
         wordlen = self.options['bits']
+        lsbfirst = self.options['bitorder'] == 'lsb first'
 
         while True:
-            (clk, sda) = self.wait([{0: 'r'}, {0: 'f'}])      # Rising or falling clock
+            try:
+                (clk, sda) = self.wait([{0: 'r'}, {0: 'f'}])      # Rising or falling clock
+            except:
+                # print("EOF Error!!!")
+                # Samples exhausted. Finish the last run, if present
+                if self.nibblecount > 0:
+                    if lsbfirst:
+                        self.nibble = (self.nibble << 1) | self.lastbit
+                    else:
+                        self.nibble |= (self.lastbit << self.nibblecount)
+                    bitlen = self.samplenum - self.bitstartsample  # bit length
+                    average = 0 if self.bitlencount == 0 else ceil(self.bitlensum / self.bitlencount)
+                    self.put(self.bitstartsample, self.bitstartsample + average, self.out_ann, [0, [str(self.lastbit)]])
+                    self.put(self.nibblestartsample, self.bitstartsample + average, self.out_ann, [1, ["%0.1X" % self.nibble]])
+                    raise EOFError("No more samples")
 
             if (clock_edge == 'rising' and clk == 1) or (clock_edge == 'falling' and clk == 0):
                 # We are at an active edge. If a previous bit is pending render it, then store the bit read now
@@ -145,7 +162,10 @@ class Decoder(srd.Decoder):
                     self.put(self.bitstartsample, es, self.out_ann, [0, [str(self.lastbit)]])
 
                     # collect the nibble and put it if we have 4 bits (or a truncate)
-                    self.nibble = (self.nibble << 1) | self.lastbit
+                    if lsbfirst:
+                        self.nibble = (self.nibble << 1) | self.lastbit
+                    else:
+                        self.nibble |= (self.lastbit << self.nibblecount)
                     self.nibblecount += 1
                     if self.nibblestartsample == 0:
                         self.nibblestartsample = self.bitstartsample
